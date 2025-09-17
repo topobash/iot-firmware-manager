@@ -1,149 +1,190 @@
 <?php
 /*
 Plugin Name: IoT Firmware Manager
-Description: Plugin untuk mengelola firmware IoT device dan menyediakan endpoint OTA update.
-Version: 1.0.0
-Author: Cobaterus
+Description: Firmware OTA manager + device monitoring + GitHub auto updater.
+Version: 1.0.1
+Author: cobaterus
 */
 
-if (!defined('ABSPATH')) {
-    exit;
-}
+// ========================
+// Konfigurasi GitHub Update
+// ========================
+define('IOT_FIRMWARE_PLUGIN_VERSION', '1.0.1');
+define('IOT_FIRMWARE_PLUGIN_SLUG', plugin_basename(__FILE__));
+define('IOT_FIRMWARE_GITHUB_REPO', 'https://github.com/topobash/iot-firmware-manager'); // ganti USERNAME
 
-// === Buat menu admin IoT Firmware ===
+// Hook update plugin dari GitHub
+add_filter('pre_set_site_transient_update_plugins', function ($transient) {
+    if (empty($transient->checked)) return $transient;
+
+    $remote = wp_remote_get(IOT_FIRMWARE_GITHUB_REPO . '/releases/latest');
+    if (!is_wp_error($remote) && $remote['response']['code'] == 200) {
+        $body = wp_remote_retrieve_body($remote);
+        if (preg_match('/"tag_name":"v?([\d.]+)"/', $body, $m)) {
+            $remote_version = $m[1];
+            if (version_compare(IOT_FIRMWARE_PLUGIN_VERSION, $remote_version, '<')) {
+                $transient->response[IOT_FIRMWARE_PLUGIN_SLUG] = (object)[
+                    'slug' => 'iot-firmware-manager',
+                    'new_version' => $remote_version,
+                    'url' => IOT_FIRMWARE_GITHUB_REPO,
+                    'package' => IOT_FIRMWARE_GITHUB_REPO . '/archive/refs/tags/v' . $remote_version . '.zip'
+                ];
+            }
+        }
+    }
+    return $transient;
+});
+
+// ========================
+// DB Setup untuk Devices
+// ========================
+register_activation_hook(__FILE__, function () {
+    global $wpdb;
+    $table = $wpdb->prefix . 'iot_devices';
+    $charset = $wpdb->get_charset_collate();
+
+    $sql = "CREATE TABLE IF NOT EXISTS $table (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        device_id VARCHAR(64) NOT NULL,
+        fw_version VARCHAR(32) DEFAULT '',
+        status VARCHAR(32) DEFAULT 'offline',
+        last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) $charset;";
+
+    require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+    dbDelta($sql);
+});
+
+// ========================
+// REST API Endpoints
+// ========================
+add_action('rest_api_init', function () {
+    // Endpoint OTA Firmware
+    register_rest_route('iot-firmware/v1', '/version/(?P<device>[a-zA-Z0-9_-]+)', [
+        'methods' => 'GET',
+        'callback' => function ($req) {
+            $upload_dir = wp_upload_dir();
+            $fw_dir = $upload_dir['basedir'] . '/firmware';
+            $fw_file = $fw_dir . '/firmware.bin';
+
+            if (file_exists($fw_file)) {
+                return [
+                    'version' => IOT_FIRMWARE_PLUGIN_VERSION,
+                    'url' => $upload_dir['baseurl'] . '/firmware/firmware.bin'
+                ];
+            } else {
+                return new WP_Error('no_firmware', 'Firmware not found', ['status' => 404]);
+            }
+        },
+        'permission_callback' => '__return_true'
+    ]);
+
+    // Endpoint Device Report
+    register_rest_route('iot-firmware/v1', '/report', [
+        'methods' => 'POST',
+        'callback' => function ($req) {
+            global $wpdb;
+            $table = $wpdb->prefix . 'iot_devices';
+
+            $device_id  = sanitize_text_field($req['device_id']);
+            $fw_version = sanitize_text_field($req['fw_version']);
+            $status     = sanitize_text_field($req['status']);
+
+            if (!$device_id) {
+                return new WP_Error('no_device', 'Device ID required', ['status' => 400]);
+            }
+
+            // Upsert device
+            $exists = $wpdb->get_var($wpdb->prepare("SELECT id FROM $table WHERE device_id=%s", $device_id));
+            if ($exists) {
+                $wpdb->update($table, [
+                    'fw_version' => $fw_version,
+                    'status' => $status,
+                    'last_seen' => current_time('mysql')
+                ], ['id' => $exists]);
+            } else {
+                $wpdb->insert($table, [
+                    'device_id' => $device_id,
+                    'fw_version' => $fw_version,
+                    'status' => $status,
+                    'last_seen' => current_time('mysql')
+                ]);
+            }
+
+            return ['success' => true, 'device_id' => $device_id];
+        },
+        'permission_callback' => '__return_true'
+    ]);
+});
+
+// ========================
+// Admin Menu
+// ========================
 add_action('admin_menu', function () {
     add_menu_page(
         'IoT Firmware',
         'IoT Firmware',
         'manage_options',
         'iot-firmware',
-        'iot_firmware_admin_page',
-        'dashicons-hammer',
-        80
+        'iot_firmware_page',
+        'dashicons-upload',
+        6
+    );
+
+    add_submenu_page(
+        'iot-firmware',
+        'IoT Devices',
+        'IoT Devices',
+        'manage_options',
+        'iot-devices',
+        'iot_devices_page'
     );
 });
 
-function iot_firmware_admin_page()
+// ========================
+// Halaman Admin
+// ========================
+function iot_firmware_page()
 {
-    ?>
-    <div class="wrap">
-        <h1>IoT Firmware Manager</h1>
-        <form method="post" enctype="multipart/form-data">
-            <input type="file" name="firmware_file" accept=".bin" required>
-            <input type="submit" name="upload_firmware" class="button button-primary" value="Upload Firmware">
-        </form>
-    </div>
-    <?php
+    if (isset($_FILES['firmware_file'])) {
+        $upload_dir = wp_upload_dir();
+        $fw_dir = $upload_dir['basedir'] . '/firmware';
+        if (!file_exists($fw_dir)) wp_mkdir_p($fw_dir);
 
-    if (isset($_POST['upload_firmware'])) {
-        if (!empty($_FILES['firmware_file']['tmp_name'])) {
-            $upload_dir = wp_upload_dir();
-            $firmware_dir = $upload_dir['basedir'] . '/firmware';
-            if (!file_exists($firmware_dir)) {
-                wp_mkdir_p($firmware_dir);
-            }
-            $filename = basename($_FILES['firmware_file']['name']);
-            $target = $firmware_dir . '/' . $filename;
-
-            if (move_uploaded_file($_FILES['firmware_file']['tmp_name'], $target)) {
-                echo '<div class="updated"><p>Firmware berhasil diupload: ' . esc_html($filename) . '</p></div>';
-                update_option('iot_firmware_latest', $upload_dir['baseurl'] . '/firmware/' . $filename);
-                update_option('iot_firmware_version', time()); // versi sederhana timestamp
-            } else {
-                echo '<div class="error"><p>Upload gagal!</p></div>';
-            }
+        $dest = $fw_dir . '/firmware.bin';
+        if (move_uploaded_file($_FILES['firmware_file']['tmp_name'], $dest)) {
+            echo "<div class='updated'><p>Firmware berhasil diupload!</p></div>";
+        } else {
+            echo "<div class='error'><p>Gagal upload firmware.</p></div>";
         }
     }
+
+    echo "<div class='wrap'><h1>Upload Firmware OTA</h1>
+        <form method='post' enctype='multipart/form-data'>
+        <input type='file' name='firmware_file' required>
+        <button type='submit' class='button button-primary'>Upload</button>
+        </form></div>";
 }
 
-// === REST API Endpoint untuk device OTA ===
-add_action('rest_api_init', function () {
-    register_rest_route('iot-firmware/v1', '/version/(?P<device>[\w-]+)', [
-        'methods'  => 'GET',
-        'callback' => 'iot_firmware_api',
-    ]);
-});
-
-function iot_firmware_api(WP_REST_Request $request)
+function iot_devices_page()
 {
-    $device = sanitize_text_field($request['device']);
-    $url = get_option('iot_firmware_latest', '');
-    $version = get_option('iot_firmware_version', '0');
+    global $wpdb;
+    $table = $wpdb->prefix . 'iot_devices';
+    $rows = $wpdb->get_results("SELECT * FROM $table ORDER BY last_seen DESC");
 
-    return [
-        'device'  => $device,
-        'version' => $version,
-        'url'     => $url,
-    ];
+    echo "<div class='wrap'><h1>IoT Devices</h1>";
+    echo "<table class='widefat fixed striped'><thead>
+            <tr><th>Device ID</th><th>Firmware</th><th>Status</th><th>Last Seen</th></tr>
+          </thead><tbody>";
+
+    foreach ($rows as $r) {
+        echo "<tr>
+            <td>{$r->device_id}</td>
+            <td>{$r->fw_version}</td>
+            <td>{$r->status}</td>
+            <td>{$r->last_seen}</td>
+        </tr>";
+    }
+
+    echo "</tbody></table></div>";
 }
-
-// === Custom Plugin Update from GitHub ===
-add_filter('pre_set_site_transient_update_plugins', function ($transient) {
-    if (empty($transient->checked)) {
-        return $transient;
-    }
-
-    // URL ke update.json di GitHub
-    $remote = wp_remote_get('https://raw.githubusercontent.com/topobash/iot-firmware-manager/main/update.json');
-    if (is_wp_error($remote) || wp_remote_retrieve_response_code($remote) !== 200) {
-        return $transient;
-    }
-
-    $data = json_decode(wp_remote_retrieve_body($remote));
-    if (!$data) {
-        return $transient;
-    }
-
-    // Versi plugin lokal
-    $plugin_file = plugin_basename(__FILE__);
-    $plugin_data = get_plugin_data(__FILE__);
-    $local_version = $plugin_data['Version'];
-
-    // Bandingkan versi
-    if (version_compare($data->version, $local_version, '>')) {
-        $transient->response[$plugin_file] = (object)[
-            'slug'        => dirname($plugin_file),
-            'new_version' => $data->version,
-            'url'         => 'https://github.com/topobash/iot-firmware-manager',
-            'package'     => $data->download_url,
-        ];
-    }
-
-    return $transient;
-});
-
-// === Info plugin di halaman detail update ===
-add_filter('plugins_api', function ($res, $action, $args) {
-    if ($action !== 'plugin_information') {
-        return $res;
-    }
-
-    if ($args->slug !== 'iot-firmware-manager') {
-        return $res;
-    }
-
-    $remote = wp_remote_get('https://raw.githubusercontent.com/topobash/iot-firmware-manager/main/update.json');
-    if (is_wp_error($remote) || wp_remote_retrieve_response_code($remote) !== 200) {
-        return $res;
-    }
-
-    $data = json_decode(wp_remote_retrieve_body($remote));
-    if (!$data) {
-        return $res;
-    }
-
-    $res = (object)[
-        'name'          => 'IoT Firmware Manager',
-        'slug'          => 'iot-firmware-manager',
-        'version'       => $data->version,
-        'author'        => '<a href="https://cobaterus.com">Cobaterus IoT</a>',
-        'homepage'      => 'https://github.com/topobash/iot-firmware-manager',
-        'download_link' => $data->download_url,
-        'sections'      => [
-            'description' => 'Plugin untuk mengelola firmware IoT device.',
-            'changelog'   => 'Update versi ' . $data->version,
-        ],
-    ];
-
-    return $res;
-}, 10, 3);
