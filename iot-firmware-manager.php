@@ -6,17 +6,18 @@ Version: 1.0.0
 Author: cobaterus
 */
 
-// ========================
-// Konfigurasi GitHub Update
-// ========================
+defined('ABSPATH') || exit;
+
+// === Constants ===
 define('IOT_FIRMWARE_PLUGIN_VERSION', '1.0.0');
 define('IOT_FIRMWARE_PLUGIN_SLUG', plugin_basename(__FILE__));
-define('IOT_FIRMWARE_GITHUB_USER', 'topobash'); // Ganti username GitHub kamu
+define('IOT_FIRMWARE_GITHUB_USER', 'topobash');
 define('IOT_FIRMWARE_GITHUB_REPO', 'iot-firmware-manager');
 
-// ========================
-// GitHub Auto Updater
-// ========================
+// === Include Custom API ===
+require_once plugin_dir_path(__FILE__) . 'includes/api.php';
+
+// === GitHub Auto Updater ===
 add_filter('pre_set_site_transient_update_plugins', function ($transient) {
     if (empty($transient->checked)) return $transient;
 
@@ -66,9 +67,7 @@ add_filter('plugins_api', function ($result, $action, $args) {
     return $result;
 }, 10, 3);
 
-// ========================
-// DB Setup untuk Devices
-// ========================
+// === DB Table Setup ===
 register_activation_hook(__FILE__, function () {
     global $wpdb;
     $table = $wpdb->prefix . 'iot_devices';
@@ -86,31 +85,8 @@ register_activation_hook(__FILE__, function () {
     dbDelta($sql);
 });
 
-// ========================
-// REST API Endpoints
-// ========================
+// === REST API for Reporting Device Info ===
 add_action('rest_api_init', function () {
-    // Endpoint OTA Firmware
-    register_rest_route('iot-firmware/v1', '/version/(?P<device>[a-zA-Z0-9_-]+)', [
-        'methods' => 'GET',
-        'callback' => function ($req) {
-            $upload_dir = wp_upload_dir();
-            $fw_dir = $upload_dir['basedir'] . '/firmware';
-            $fw_file = $fw_dir . '/firmware.bin';
-
-            if (file_exists($fw_file)) {
-                return [
-                    'version' => IOT_FIRMWARE_PLUGIN_VERSION,
-                    'url' => $upload_dir['baseurl'] . '/firmware/firmware.bin'
-                ];
-            } else {
-                return new WP_Error('no_firmware', 'Firmware not found', ['status' => 404]);
-            }
-        },
-        'permission_callback' => '__return_true'
-    ]);
-
-    // Endpoint Device Report
     register_rest_route('iot-firmware/v1', '/report', [
         'methods' => 'POST',
         'callback' => function ($req) {
@@ -125,7 +101,6 @@ add_action('rest_api_init', function () {
                 return new WP_Error('no_device', 'Device ID required', ['status' => 400]);
             }
 
-            // Upsert device
             $exists = $wpdb->get_var($wpdb->prepare("SELECT id FROM $table WHERE device_id=%s", $device_id));
             if ($exists) {
                 $wpdb->update($table, [
@@ -148,9 +123,7 @@ add_action('rest_api_init', function () {
     ]);
 });
 
-// ========================
-// Admin Menu
-// ========================
+// === Admin Pages ===
 add_action('admin_menu', function () {
     add_menu_page(
         'IoT Firmware',
@@ -172,9 +145,7 @@ add_action('admin_menu', function () {
     );
 });
 
-// ========================
-// Halaman Admin
-// ========================
+// === Admin Page: Firmware Upload ===
 function iot_firmware_page()
 {
     $upload_dir = wp_upload_dir();
@@ -182,28 +153,47 @@ function iot_firmware_page()
     $fw_url = $upload_dir['baseurl'] . '/firmware/';
 
     if (isset($_FILES['firmware_file'])) {
-        if (!file_exists($fw_dir)) wp_mkdir_p($fw_dir);
+        $firmware_version = isset($_POST['firmware_version']) ? trim($_POST['firmware_version']) : '';
 
-        $dest = $fw_dir . 'firmware.bin';
-        if (move_uploaded_file($_FILES['firmware_file']['tmp_name'], $dest)) {
-            echo "<div class='updated'><p>Firmware berhasil diupload!</p></div>";
+        if (empty($firmware_version)) {
+            echo "<div class='error'><p><strong>❌ Gagal:</strong> Versi firmware wajib diisi.</p></div>";
         } else {
-            echo "<div class='error'><p>Gagal upload firmware.</p></div>";
+            if (!file_exists($fw_dir)) wp_mkdir_p($fw_dir);
+
+            $dest = $fw_dir . 'firmware.bin';
+
+            if (move_uploaded_file($_FILES['firmware_file']['tmp_name'], $dest)) {
+                // Simpan versi ke version.txt
+                file_put_contents($fw_dir . 'version.txt', sanitize_text_field($firmware_version));
+                echo "<div class='updated'><p>✅ Firmware berhasil diupload! Versi: <strong>$firmware_version</strong></p></div>";
+            } else {
+                echo "<div class='error'><p>❌ Gagal upload firmware.</p></div>";
+            }
         }
     }
 
     echo "<div class='wrap'><h1>Upload Firmware OTA</h1>
-        <form method='post' enctype='multipart/form-data'>
-        <input type='file' name='firmware_file' required>
-        <button type='submit' class='button button-primary'>Upload</button>
-        </form><hr>";
+    <form method='post' enctype='multipart/form-data' style='max-width:500px;'>
+        <p>
+            <label for='firmware_file'><strong>File Firmware (.bin):</strong></label><br>
+            <input type='file' name='firmware_file' id='firmware_file' accept='.bin' required>
+        </p>
+        <p>
+            <label for='firmware_version'><strong>Versi Firmware:</strong></label><br>
+            <input type='text' name='firmware_version' id='firmware_version' placeholder='Contoh: 1.0.0' required>
+        </p>
+        <p>
+            <button type='submit' class='button button-primary'>Upload</button>
+        </p>
+    </form>
+    <hr>";
 
-    // Cek apakah file firmware ada
     if (file_exists($fw_dir . 'firmware.bin')) {
         $url = $fw_url . 'firmware.bin';
+        $version = file_exists($fw_dir . 'version.txt') ? trim(file_get_contents($fw_dir . 'version.txt')) : 'unknown';
         $time = date("Y-m-d H:i:s", filemtime($fw_dir . 'firmware.bin'));
         echo "<p><strong>Firmware Aktif:</strong> <a href='$url' target='_blank'>$url</a><br>";
-        echo "Last updated: $time</p>";
+        echo "Versi: $version<br>Last updated: $time</p>";
     } else {
         echo "<p><em>Belum ada firmware diupload.</em></p>";
     }
@@ -211,7 +201,7 @@ function iot_firmware_page()
     echo "</div>";
 }
 
-
+// === Admin Page: Devices ===
 function iot_devices_page()
 {
     global $wpdb;
