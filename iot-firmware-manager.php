@@ -2,14 +2,14 @@
 /*
 Plugin Name: IoT Firmware Manager
 Description: Firmware OTA manager + device monitoring + GitHub auto updater.
-Version: 1.0.2
+Version: 1.0.0
 Author: cobaterus
 */
 
 // ========================
 // Konfigurasi GitHub Update
 // ========================
-define('IOT_FIRMWARE_PLUGIN_VERSION', '1.0.2');
+define('IOT_FIRMWARE_PLUGIN_VERSION', '1.0.0');
 define('IOT_FIRMWARE_PLUGIN_SLUG', plugin_basename(__FILE__));
 define('IOT_FIRMWARE_GITHUB_USER', 'topobash'); // Ganti username GitHub kamu
 define('IOT_FIRMWARE_GITHUB_REPO', 'iot-firmware-manager');
