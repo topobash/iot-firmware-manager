@@ -2,7 +2,7 @@
 /*
 Plugin Name: IoT Firmware Manager
 Description: Upload firmware OTA, monitoring device, dan distribusi update ke IoT.
-Version: 1.2.0
+Version: 1.0.2
 Author: cobaterus
 */
 
