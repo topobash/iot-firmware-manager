@@ -177,12 +177,14 @@ add_action('admin_menu', function () {
 // ========================
 function iot_firmware_page()
 {
+    $upload_dir = wp_upload_dir();
+    $fw_dir = $upload_dir['basedir'] . '/firmware/';
+    $fw_url = $upload_dir['baseurl'] . '/firmware/';
+
     if (isset($_FILES['firmware_file'])) {
-        $upload_dir = wp_upload_dir();
-        $fw_dir = $upload_dir['basedir'] . '/firmware';
         if (!file_exists($fw_dir)) wp_mkdir_p($fw_dir);
 
-        $dest = $fw_dir . '/firmware.bin';
+        $dest = $fw_dir . 'firmware.bin';
         if (move_uploaded_file($_FILES['firmware_file']['tmp_name'], $dest)) {
             echo "<div class='updated'><p>Firmware berhasil diupload!</p></div>";
         } else {
@@ -194,8 +196,21 @@ function iot_firmware_page()
         <form method='post' enctype='multipart/form-data'>
         <input type='file' name='firmware_file' required>
         <button type='submit' class='button button-primary'>Upload</button>
-        </form></div>";
+        </form><hr>";
+
+    // Cek apakah file firmware ada
+    if (file_exists($fw_dir . 'firmware.bin')) {
+        $url = $fw_url . 'firmware.bin';
+        $time = date("Y-m-d H:i:s", filemtime($fw_dir . 'firmware.bin'));
+        echo "<p><strong>Firmware Aktif:</strong> <a href='$url' target='_blank'>$url</a><br>";
+        echo "Last updated: $time</p>";
+    } else {
+        echo "<p><em>Belum ada firmware diupload.</em></p>";
+    }
+
+    echo "</div>";
 }
+
 
 function iot_devices_page()
 {
