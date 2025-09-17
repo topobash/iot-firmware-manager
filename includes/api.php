@@ -14,7 +14,7 @@ function iot_firmware_get_version($data)
     $device = sanitize_text_field($data['device']);
     $upload_dir = wp_upload_dir();
     $fw_dir = trailingslashit($upload_dir['basedir']) . 'firmware';
-    $fw_url = trailingslashit($upload_dir['baseurl']) . 'firmware';
+    $fw_url = trailingslashit($upload_dir['baseurl']) . 'firmware/'; // <-- pastikan ada slash di akhir
     $fw_file = $fw_dir . '/firmware.bin';
     $version_file = $fw_dir . '/version.txt';
 
@@ -23,7 +23,7 @@ function iot_firmware_get_version($data)
         return [
             'device' => $device,
             'version' => $version,
-            'url' => $fw_url . 'firmware.bin'
+            'url' => $fw_url . 'firmware.bin'  // sekarang akan jadi .../firmware/firmware.bin
         ];
     } else {
         return new WP_Error('no_firmware', 'Firmware not found for device: ' . $device, ['status' => 404]);
